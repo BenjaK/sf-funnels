@@ -43,12 +43,14 @@ GROUP BY
     user_id
 )
 
+-- Find transitions from one state/event to the next for each user
 , funnels AS (
 SELECT
     user_id,
     ARRAY(
         SELECT
             STRUCT(
+                a.event_ordering AS parent_event_ordering,
                 a.event_name AS parent_event,
                 b.event_name AS child_event,
                 b.event_name IS NOT NULL AS funneled
@@ -66,14 +68,25 @@ FROM
     collected_events
 )
 
+-- Filter out double counts: maybe some users transitioned from a given state to the next more than once.
 , unique_funnels AS (
 SELECT
     user_id,
+    IF(
+        (
+            SELECT 
+                MIN(parent_event_ordering)
+            FROM 
+                UNNEST(processed_events)
+        ) = 1,
+        1,
+        NULL
+    ) AS has_first_event,
     ARRAY(
         SELECT
             STRUCT(
                 child_event,
-                IF(LOGICAL_OR(funneled), 1, 0) AS funneled
+                IF(LOGICAL_OR(funneled), 1, NULL) AS funneled
             )
         FROM
             UNNEST(processed_events) AS a
@@ -86,38 +99,43 @@ FROM
     funnels
 )
 
-SELECT 
-    event_name,
-    event_ordering,
-    funneled_users
-FROM (
+, grouped_counts AS (
 SELECT
     child_event AS event_name,
+    SUM(has_first_event) AS has_first_event,
     SUM(funneled) AS funneled_users
 FROM
     unique_funnels
 LEFT JOIN
     UNNEST(processed_events)
-WHERE
-    child_event IS NOT NULL
 GROUP BY
     1
-
-UNION ALL
+)
 
 SELECT
-    event_name,
-    COUNT(*) AS funneled_users
+    event_name, 
+    event_ordering,
+    funneled_users
 FROM (
-    SELECT 
-        user_id, 
-        (SELECT ANY_VALUE(event_name) FROM UNNEST(events) WHERE event_name = 'A') AS event_name
+    SELECT
+        (SELECT event_name FROM event_enum WHERE event_ordering = 1) AS event_name,
+        SUM(has_first_event) AS funneled_users
     FROM
-        collected_events
-    )
+        grouped_counts
     WHERE
         event_name IS NOT NULL
-    GROUP BY 1
+
+    UNION ALL
+
+    SELECT
+        event_name,
+        SUM(funneled_users) AS funneled_users
+    FROM
+        grouped_counts
+    WHERE
+        event_name IS NOT NULL
+    GROUP BY
+        event_name
 )
 INNER JOIN
     event_enum
