@@ -68,7 +68,7 @@ FROM
     collected_events
 )
 
--- Filter out double counts: maybe some users transitioned from a given state to the next more than once.
+-- Filter out duplicate event counts: maybe some users transitioned from a given state to the next more than once?
 , unique_funnels AS (
 SELECT
     user_id,
@@ -99,6 +99,9 @@ FROM
     funnels
 )
 
+-- Do an intermediate count of events in order to avoid processing the per-user data twice.
+-- Because we end up with two columns of counts, we later need to pivot this data to only
+-- have one column of counts.
 , grouped_counts AS (
 SELECT
     child_event AS event_name,
