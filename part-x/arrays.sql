@@ -1,5 +1,3 @@
-# Funnel analysis
-
 WITH event_data AS (
 SELECT 1 AS user_id, TIMESTAMP('2022-01-01 00:00:00') AS event_at, 'A' AS event_name UNION ALL
 SELECT 1 AS user_id, TIMESTAMP('2022-01-01 00:00:01') AS event_at, 'B' AS event_name UNION ALL
@@ -24,6 +22,7 @@ SELECT 7 AS user_id, TIMESTAMP('2022-01-01 00:00:02') AS event_at, 'A' AS event_
 SELECT 7 AS user_id, TIMESTAMP('2022-01-01 00:00:03') AS event_at, 'C' AS event_name
 )
 
+-- This could be a metadata table/view
 , event_enum AS (
 SELECT 'A' AS event_name, 1 AS event_ordering UNION ALL
 SELECT 'B' AS event_name, 2 AS event_ordering UNION ALL
@@ -33,7 +32,7 @@ SELECT 'C' AS event_name, 3 AS event_ordering
 , collected_events AS (
 SELECT 
     user_id,
-    ARRAY_AGG(STRUCT(event_name, event_ordering, event_at) ORDER BY event_at) AS events
+    ARRAY_AGG(STRUCT(event_name, event_ordering, event_at)) AS events
 FROM
     event_data
 LEFT JOIN
@@ -52,7 +51,7 @@ SELECT
             STRUCT(
                 a.event_name AS parent_event,
                 b.event_name AS child_event,
-                IF(b.event_name IS NOT NULL, 1, 0) AS funneled
+                b.event_name IS NOT NULL AS funneled
             )
         FROM
             UNNEST(events) AS a
@@ -67,6 +66,26 @@ FROM
     collected_events
 )
 
+, unique_funnels AS (
+SELECT
+    user_id,
+    ARRAY(
+        SELECT
+            STRUCT(
+                child_event,
+                IF(LOGICAL_OR(funneled), 1, 0) AS funneled
+            )
+        FROM
+            UNNEST(processed_events) AS a
+        WHERE
+            child_event IS NOT NULL
+        GROUP BY
+            child_event
+    ) AS processed_events
+FROM
+    funnels
+)
+
 SELECT 
     event_name,
     event_ordering,
@@ -74,9 +93,9 @@ SELECT
 FROM (
 SELECT
     child_event AS event_name,
-    COUNT(DISTINCT user_id) AS funneled_users
+    SUM(funneled) AS funneled_users
 FROM
-    funnels
+    unique_funnels
 LEFT JOIN
     UNNEST(processed_events)
 WHERE
@@ -88,20 +107,21 @@ UNION ALL
 
 SELECT
     event_name,
-    COUNT(DISTINCT user_id) AS funneled_users
+    COUNT(*) AS funneled_users
 FROM (
-SELECT 
-    user_id, 
-    (SELECT ANY_VALUE(event_name) FROM UNNEST(events) WHERE event_name = 'A') AS event_name
-FROM
-    collected_events
-)
-WHERE
-    event_name IS NOT NULL
-GROUP BY 1
+    SELECT 
+        user_id, 
+        (SELECT ANY_VALUE(event_name) FROM UNNEST(events) WHERE event_name = 'A') AS event_name
+    FROM
+        collected_events
+    )
+    WHERE
+        event_name IS NOT NULL
+    GROUP BY 1
 )
 INNER JOIN
     event_enum
 USING 
     (event_name)
-ORDER BY event_ordering
+ORDER BY 
+    event_ordering
